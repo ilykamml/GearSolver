@@ -8,11 +8,12 @@ GearSolver — главный оркестратор для реверс-инж�
 """
 
 import sys
+from io import TextIOWrapper
 
 # Force UTF-8 output on Windows to support Unicode symbols
-if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+if isinstance(sys.stdout, TextIOWrapper) and sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
-if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
+if isinstance(sys.stderr, TextIOWrapper) and sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
     sys.stderr.reconfigure(encoding='utf-8')
 
 from cli import parse_cli_args, interactive_input
