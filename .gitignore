@@ -20,3 +20,4 @@ build/
 gear_results.html
 *.log
 .DS_Store
+reports/

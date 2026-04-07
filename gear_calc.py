@@ -31,9 +31,14 @@ def main() -> None:
     print("=" * 60 + "\n")
     
     # 1. Получить входные данные
-    gear_input = parse_cli_args()
-    if gear_input is None:
+    result = parse_cli_args()
+    if result is None:
         gear_input = interactive_input()
+        use_default_modules = False
+    else:
+        gear_input, use_default_modules = result
+        if gear_input is None:
+            gear_input = interactive_input()
     
     print(f"\n✓ Входные данные загружены")
     if gear_input.is_pair():
@@ -48,7 +53,9 @@ def main() -> None:
     
     # 2. Построить пул модулей
     print("\n✓ Формирование пула модулей...")
-    modules = build_module_pool()
+    modules = build_module_pool(default_only=use_default_modules)
+    if use_default_modules:
+        print(f"  Режим: только дефолтные модули (ГОСТ + DP)")
     print(f"  Всего модулей для проверки: {len(modules)}")
     
     # 3. Запустить параллельную оптимизацию

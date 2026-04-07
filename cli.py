@@ -24,33 +24,38 @@ class GearInput:
         return self.da2 is not None and self.z2 is not None
 
 
-def parse_cli_args() -> Optional[GearInput]:
+def parse_cli_args() -> tuple[Optional[GearInput], bool]:
     """
     Парсить аргументы командной строки.
     
     Поддерживаемые сигнатуры:
       - python gear_calc.py da1 df1 z1 [aw]          # одна шестерня
       - python gear_calc.py da1 df1 z1 da2 df2 z2 [aw]  # пара
+      - python gear_calc.py -d da1 df1 z1 [aw]       # одна шестерня (только ГОСТ+DP)
+      - python gear_calc.py -d da1 df1 z1 da2 df2 z2 [aw]  # пара (только ГОСТ+DP)
     
-    Если аргументы не переданы, возвращает None для перехода в интерактивный режим.
+    Возвращает кортеж (GearInput или None, use_default_modules).
+    Если аргументы не переданы, возвращает (None, False) для перехода в интерактивный режим.
     """
     # Проверяем наличие аргументов
     if len(sys.argv) == 1:
-        return None
+        return None, False
     
     parser = argparse.ArgumentParser(
         description="GearSolver — реверс-инжиниринг параметров зубчатых передач",
         add_help=True
     )
     
-    # Добавляем позиционные аргументы как необязательные
+    parser.add_argument('-d', '--default', action='store_true',
+                        help='Использовать только дефолтные модули (ГОСТ и DP)')
     parser.add_argument('args', nargs='*', help='Аргументы для ввода')
     
     parsed = parser.parse_args()
     args = parsed.args
+    use_default = parsed.default
     
     if not args:
-        return None
+        return None, use_default
     
     try:
         if len(args) in (3, 4):
@@ -61,7 +66,7 @@ def parse_cli_args() -> Optional[GearInput]:
                 df1=float(args[1]),
                 z1=int(float(args[2])),
                 aw=aw
-            )
+            ), use_default
         elif len(args) in (6, 7):
             # Пара: da1 df1 z1 da2 df2 z2 [aw]
             aw = float(args[6]) if len(args) == 7 else 0.0
@@ -73,13 +78,13 @@ def parse_cli_args() -> Optional[GearInput]:
                 df2=float(args[4]),
                 z2=int(float(args[5])),
                 aw=aw
-            )
+            ), use_default
         else:
             print(f"Ошибка: ожидается 3-4 или 6-7 аргументов, получено {len(args)}")
-            return None
+            return None, use_default
     except ValueError as e:
         print(f"Ошибка парсинга аргументов: {e}")
-        return None
+        return None, use_default
 
 
 def interactive_input() -> GearInput:

@@ -1,9 +1,11 @@
 """
-Модуль фильтрации результатов и вывода таблицы в консоль.
+Модуль фильтрации результатов и вывода таблицы в консоль и файл.
 """
 
 from typing import Optional
 import math
+from datetime import datetime
+from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
@@ -70,6 +72,57 @@ def filter_and_print(
     filtered.sort(key=sort_key)
     _print_table(filtered[:top_n], gear_input)
     return filtered
+
+
+def _format_table_md(results: list[SolveResult], gear_input: Optional[GearInput] = None) -> str:
+    """Форматировать таблицу результатов в Markdown."""
+    is_pair = gear_input is not None and gear_input.is_pair()
+    
+    lines = []
+    
+    # Заголовок таблицы
+    header = "| # | m (мм) | Стандарт | Этап | x₁ | x₂ | hₐ* | c* | da₁расч | df₁расч |"
+    if is_pair:
+        header += " da₂расч | df₂расч |"
+    header += " RMSE (мм) |"
+    lines.append(header)
+    
+    # Разделитель
+    sep = "|---|---|---|---|---|---|---|---|---|---|"
+    if is_pair:
+        sep += "---|---|"
+    sep += "---|"
+    lines.append(sep)
+    
+    # Строки данных
+    for i, r in enumerate(results, 1):
+        if r.is_gost:
+            standard = "ГОСТ ✓"
+        elif r.dp_label:
+            standard = r.dp_label
+        else:
+            standard = "—"
+        
+        stage_str = "1" if r.stage == 1 else "2"
+        x2_str = f"{r.x2:.3f}" if r.x2 is not None else "—"
+        
+        # Расчётные диаметры
+        if gear_input is not None:
+            da1c, df1c, da2c, df2c = _calc_diameters(r, gear_input)
+            da1_str = f"{da1c:.3f}"
+            df1_str = f"{df1c:.3f}"
+            da2_str = f"{da2c:.3f}" if da2c is not None else "—"
+            df2_str = f"{df2c:.3f}" if df2c is not None else "—"
+        else:
+            da1_str = df1_str = da2_str = df2_str = "—"
+        
+        row = f"| {i} | {r.m:.3f} | {standard} | {stage_str} | {r.x1:.3f} | {x2_str} | {r.ha_star:.3f} | {r.c_star:.3f} | {da1_str} | {df1_str} |"
+        if is_pair:
+            row += f" {da2_str} | {df2_str} |"
+        row += f" {r.total_error:.3e} |"
+        lines.append(row)
+    
+    return "\n".join(lines)
 
 
 def _print_table(results: list[SolveResult], gear_input: Optional[GearInput] = None) -> None:
@@ -148,6 +201,68 @@ def _print_table(results: list[SolveResult], gear_input: Optional[GearInput] = N
     print()
 
 
+def _save_report_to_file(
+    results: list[SolveResult],
+    gear_input: GearInput,
+    tolerance: float,
+    top_n: int,
+) -> None:
+    """Сохранить отчёт в файл Markdown."""
+    reports_dir = Path("reports")
+    reports_dir.mkdir(exist_ok=True)
+    
+    # Формируем имя файла с входными данными и датой/временем
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    if gear_input.is_pair():
+        params = f"da1_{gear_input.da1}_df1_{gear_input.df1}_z1_{gear_input.z1}_da2_{gear_input.da2}_df2_{gear_input.df2}_z2_{gear_input.z2}"
+    else:
+        params = f"da1_{gear_input.da1}_df1_{gear_input.df1}_z1_{gear_input.z1}"
+    
+    if gear_input.aw != 0:
+        params += f"_aw_{gear_input.aw}"
+    
+    filename = f"report_{params}_{timestamp}.md"
+    filepath = reports_dir / filename
+    
+    # Формируем содержимое отчёта
+    md_content = []
+    md_content.append("# GearSolver — Отчёт анализа\n")
+    md_content.append(f"**Дата и время:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    
+    md_content.append("## Входные данные\n")
+    if gear_input.is_pair():
+        md_content.append(f"- **Тип:** Пара шестерён\n")
+        md_content.append(f"- **Шестерня 1:** da1={gear_input.da1}, df1={gear_input.df1}, z1={gear_input.z1}\n")
+        md_content.append(f"- **Шестерня 2:** da2={gear_input.da2}, df2={gear_input.df2}, z2={gear_input.z2}\n")
+    else:
+        md_content.append(f"- **Тип:** Одна шестерня\n")
+        md_content.append(f"- **Шестерня:** da1={gear_input.da1}, df1={gear_input.df1}, z1={gear_input.z1}\n")
+    
+    if gear_input.aw != 0:
+        md_content.append(f"- **Межосевое расстояние:** aw={gear_input.aw}\n")
+    
+    md_content.append(f"\n## Параметры анализа\n")
+    md_content.append(f"- **Допуск:** {tolerance} мм\n")
+    md_content.append(f"- **Топ результатов:** {top_n}\n")
+    
+    md_content.append(f"\n## Результаты\n")
+    filtered = [r for r in results if r.total_error <= tolerance]
+    filtered.sort(key=lambda r: (1 if _at_bound(r) else 0, r.total_error, 0 if r.is_gost else (1 if r.dp_label else 2)))
+    
+    if filtered:
+        md_content.append(_format_table_md(filtered[:top_n], gear_input))
+        md_content.append(f"\n\n**Найдено решений:** {len(filtered)}\n")
+    else:
+        md_content.append("⚠ Решений, удовлетворяющих допуску, не найдено.\n")
+    
+    # Записываем в файл
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write("\n".join(md_content))
+    
+    print(f"✓ Отчёт сохранён: {filepath}")
+
+
 def print_results(
     results: list[SolveResult],
     tolerance: float,
@@ -155,4 +270,10 @@ def print_results(
     gear_input: Optional[GearInput] = None,
 ) -> list[SolveResult]:
     """Основная функция для фильтрации и вывода результатов."""
-    return filter_and_print(results, tolerance, top_n, gear_input)
+    filtered = filter_and_print(results, tolerance, top_n, gear_input)
+    
+    # Сохраняем отчёт в файл
+    if gear_input is not None:
+        _save_report_to_file(results, gear_input, tolerance, top_n)
+    
+    return filtered
