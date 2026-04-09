@@ -3,8 +3,10 @@
 """
 
 import argparse
+import math
+import statistics
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -17,66 +19,159 @@ class GearInput:
     da2: Optional[float] = None  # Диаметр вершин шестерни 2
     df2: Optional[float] = None  # Диаметр впадин шестерни 2
     z2: Optional[int] = None     # Число зубьев шестерни 2
-    aw: float = 0.0     # Межосевое расстояние (0 = не задано)
+    aw: float = 0.0              # Межосевое расстояние (0 = не задано)
+
+    # Статистика по множественным измерениям (для отчёта)
+    measurement_stats: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def is_pair(self) -> bool:
         """Проверить, является ли это парой шестерён."""
         return self.da2 is not None and self.z2 is not None
 
 
+def _parse_float_token(token: str) -> float:
+    """Parse float token with support for decimal comma."""
+    return float(token.strip().replace(',', '.'))
+
+
+def _parse_float_sequence(raw: str) -> list[float]:
+    """Parse a space-separated list of numbers with dot/comma decimal separator."""
+    parts = [p for p in raw.strip().split() if p]
+    if not parts:
+        raise ValueError("empty input")
+    return [_parse_float_token(p) for p in parts]
+
+
+def _robust_stats(values: list[float]) -> tuple[float, dict[str, float]]:
+    """
+    Robust aggregate: MAD-based outlier filtering + median representative value.
+    """
+    if not values:
+        raise ValueError("empty values")
+
+    original_count = len(values)
+    sorted_vals = sorted(values)
+    median_val = statistics.median(sorted_vals)
+
+    if len(values) >= 3:
+        deviations = [abs(v - median_val) for v in values]
+        mad = statistics.median(deviations)
+        if mad > 0:
+            robust_sigma = 1.4826 * mad
+            threshold = 3.0 * robust_sigma
+            filtered = [v for v in values if abs(v - median_val) <= threshold]
+            if not filtered:
+                filtered = values
+        else:
+            filtered = values
+    else:
+        filtered = values
+
+    rep = statistics.median(filtered)
+    mean_val = statistics.fmean(filtered)
+    std_val = statistics.pstdev(filtered) if len(filtered) > 1 else 0.0
+
+    stats = {
+        "n": float(original_count),
+        "n_used": float(len(filtered)),
+        "median": float(rep),
+        "mean": float(mean_val),
+        "std": float(std_val),
+        "min": float(min(filtered)),
+        "max": float(max(filtered)),
+    }
+    return float(rep), stats
+
+
+def _input_float_multi(prompt: str, field_name: str, allow_zero: bool = True) -> tuple[float, dict[str, float]]:
+    """Read one or multiple float measurements, aggregate robustly."""
+    while True:
+        raw = input(prompt).strip()
+        try:
+            values = _parse_float_sequence(raw)
+            if not allow_zero and any(v <= 0 for v in values):
+                print("Пожалуйста, вводите только положительные значения")
+                continue
+
+            rep, stats = _robust_stats(values)
+            if rep == 0 and not allow_zero:
+                print("Пожалуйста, вводите только положительные значения")
+                continue
+
+            if len(values) > 1:
+                print(
+                    f"    -> {field_name}: median={stats['median']:.4f}, "
+                    f"mean={stats['mean']:.4f}, std={stats['std']:.4f}, "
+                    f"использовано {int(stats['n_used'])}/{int(stats['n'])}"
+                )
+            return rep, stats
+        except ValueError:
+            print("Пожалуйста, введите число или несколько чисел через пробел (поддержка 50.2 и 50,2)")
+
+
+def _input_int_multi(prompt: str) -> int:
+    """Read one or multiple integer-like values and return robust rounded median."""
+    while True:
+        raw = input(prompt).strip()
+        try:
+            values = _parse_float_sequence(raw)
+            rep, _ = _robust_stats(values)
+            val = int(round(rep))
+            if val > 0 or val == 0:
+                return val
+            print("Пожалуйста, введите положительное число")
+        except ValueError:
+            print("Пожалуйста, введите корректное число")
+
+
 def parse_cli_args() -> tuple[Optional[GearInput], bool]:
     """
     Парсить аргументы командной строки.
-    
+
     Поддерживаемые сигнатуры:
-      - python gear_calc.py da1 df1 z1 [aw]          # одна шестерня
-      - python gear_calc.py da1 df1 z1 da2 df2 z2 [aw]  # пара
-      - python gear_calc.py -d da1 df1 z1 [aw]       # одна шестерня (только ГОСТ+DP)
-      - python gear_calc.py -d da1 df1 z1 da2 df2 z2 [aw]  # пара (только ГОСТ+DP)
-    
-    Возвращает кортеж (GearInput или None, use_default_modules).
-    Если аргументы не переданы, возвращает (None, False) для перехода в интерактивный режим.
+      - python gear_calc.py da1 df1 z1 [aw]               # одна шестерня
+      - python gear_calc.py da1 df1 z1 da2 df2 z2 [aw]    # пара
+      - python gear_calc.py -d ...                        # только ГОСТ+DP
+
+    В CLI принимается по одному значению на параметр.
     """
-    # Проверяем наличие аргументов
     if len(sys.argv) == 1:
         return None, False
-    
+
     parser = argparse.ArgumentParser(
         description="GearSolver — реверс-инжиниринг параметров зубчатых передач",
         add_help=True
     )
-    
+
     parser.add_argument('-d', '--default', action='store_true',
                         help='Использовать только дефолтные модули (ГОСТ и DP)')
     parser.add_argument('args', nargs='*', help='Аргументы для ввода')
-    
+
     parsed = parser.parse_args()
     args = parsed.args
     use_default = parsed.default
-    
+
     if not args:
         return None, use_default
-    
+
     try:
         if len(args) in (3, 4):
-            # Одна шестерня: da1 df1 z1 [aw]
-            aw = float(args[3]) if len(args) == 4 else 0.0
+            aw = _parse_float_token(args[3]) if len(args) == 4 else 0.0
             return GearInput(
-                da1=float(args[0]),
-                df1=float(args[1]),
-                z1=int(float(args[2])),
+                da1=_parse_float_token(args[0]),
+                df1=_parse_float_token(args[1]),
+                z1=int(round(_parse_float_token(args[2]))),
                 aw=aw
             ), use_default
         elif len(args) in (6, 7):
-            # Пара: da1 df1 z1 da2 df2 z2 [aw]
-            aw = float(args[6]) if len(args) == 7 else 0.0
+            aw = _parse_float_token(args[6]) if len(args) == 7 else 0.0
             return GearInput(
-                da1=float(args[0]),
-                df1=float(args[1]),
-                z1=int(float(args[2])),
-                da2=float(args[3]),
-                df2=float(args[4]),
-                z2=int(float(args[5])),
+                da1=_parse_float_token(args[0]),
+                df1=_parse_float_token(args[1]),
+                z1=int(round(_parse_float_token(args[2]))),
+                da2=_parse_float_token(args[3]),
+                df2=_parse_float_token(args[4]),
+                z2=int(round(_parse_float_token(args[5]))),
                 aw=aw
             ), use_default
         else:
@@ -88,62 +183,43 @@ def parse_cli_args() -> tuple[Optional[GearInput], bool]:
 
 
 def interactive_input() -> GearInput:
-    """
-    Пошаговый интерактивный ввод параметров шестерён.
-    """
+    """Пошаговый интерактивный ввод параметров шестерён."""
     print("\n=== GearSolver — Интерактивный режим ===\n")
-    
-    # Выбор количества шестерён
+
     while True:
         n_gears = input("Количество шестерён (1 или 2)? ").strip()
         if n_gears in ('1', '2'):
             n_gears = int(n_gears)
             break
         print("Пожалуйста, введите 1 или 2")
-    
-    print("\nДля каждого параметра введите значение или 0, если параметр неизвестен.\n")
-    
-    # Ввод параметров шестерни 1
+
+    print("\nДля каждого параметра можно ввести несколько замеров через пробел.")
+    print("Поддерживаются десятичные разделители '.' и ','; 0 = параметр неизвестен.\n")
+
+    stats: dict[str, dict[str, float]] = {}
+
     print("=== Шестерня 1 ===")
-    da1 = _input_float("  da1 (диаметр вершин, мм): ")
-    df1 = _input_float("  df1 (диаметр впадин, мм): ")
-    z1 = _input_int("  z1 (число зубьев): ")
-    
+    da1, stats['da1'] = _input_float_multi("  da1 (диаметр вершин, мм): ", "da1")
+    df1, stats['df1'] = _input_float_multi("  df1 (диаметр впадин, мм): ", "df1")
+    z1 = _input_int_multi("  z1 (число зубьев): ")
+
     if n_gears == 1:
-        aw = _input_float("\naw (межосевое расстояние, мм, опционально): ")
-        return GearInput(da1=da1, df1=df1, z1=z1, aw=aw)
-    
-    # Ввод параметров шестерни 2
+        aw, stats['aw'] = _input_float_multi("\naw (межосевое расстояние, мм, опционально): ", "aw")
+        return GearInput(da1=da1, df1=df1, z1=z1, aw=aw, measurement_stats=stats)
+
     print("\n=== Шестерня 2 ===")
-    da2 = _input_float("  da2 (диаметр вершин, мм): ")
-    df2 = _input_float("  df2 (диаметр впадин, мм): ")
-    z2 = _input_int("  z2 (число зубьев): ")
-    aw = _input_float("\naw (межосевое расстояние, мм, опционально): ")
-    
-    return GearInput(da1=da1, df1=df1, z1=z1, da2=da2, df2=df2, z2=z2, aw=aw)
+    da2, stats['da2'] = _input_float_multi("  da2 (диаметр вершин, мм): ", "da2")
+    df2, stats['df2'] = _input_float_multi("  df2 (диаметр впадин, мм): ", "df2")
+    z2 = _input_int_multi("  z2 (число зубьев): ")
+    aw, stats['aw'] = _input_float_multi("\naw (межосевое расстояние, мм, опционально): ", "aw")
 
-
-def _input_float(prompt: str) -> float:
-    """Вспомогательная функция для ввода float."""
-    while True:
-        try:
-            val = float(input(prompt))
-            return val
-        except ValueError:
-            print("Пожалуйста, введите корректное число")
-
-
-def _input_int(prompt: str) -> int:
-    """Вспомогательная функция для ввода int."""
-    while True:
-        try:
-            val = int(float(input(prompt)))
-            if val > 0:
-                return val
-            elif val == 0:
-                # Допускаем 0 как маркер неизвестного значения
-                return 0
-            else:
-                print("Пожалуйста, введите положительное число")
-        except ValueError:
-            print("Пожалуйста, введите корректное число")
+    return GearInput(
+        da1=da1,
+        df1=df1,
+        z1=z1,
+        da2=da2,
+        df2=df2,
+        z2=z2,
+        aw=aw,
+        measurement_stats=stats,
+    )
