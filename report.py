@@ -65,6 +65,7 @@ def _disp_norm(r: SolveResult) -> float:
 
 def _rank_key_error(r: SolveResult) -> tuple:
     return (
+        1 if r.tooth_violation else 0,
         1 if _at_bound(r) else 0,
         r.weighted_error,
         r.total_error,
@@ -75,6 +76,7 @@ def _rank_key_error(r: SolveResult) -> tuple:
 
 def _rank_key_confidence(r: SolveResult) -> tuple:
     return (
+        1 if r.tooth_violation else 0,
         1 if _at_bound(r) else 0,
         -r.confidence,
         r.weighted_error,
@@ -86,8 +88,10 @@ def _rank_key_confidence(r: SolveResult) -> tuple:
 
 def _rank_key_hybrid(r: SolveResult) -> tuple:
     # lower score is better
-    hybrid_score = (1.0 - r.confidence) + (r.weighted_error / max(MEASUREMENT_TOLERANCE, 1e-6))
+    tooth_penalty = 2.0 if r.tooth_violation else 0.0
+    hybrid_score = tooth_penalty + (1.0 - r.confidence) + (r.weighted_error / max(MEASUREMENT_TOLERANCE, 1e-6))
     return (
+        1 if r.tooth_violation else 0,
         1 if _at_bound(r) else 0,
         hybrid_score,
         r.weighted_error,
@@ -160,6 +164,7 @@ def _format_table_md(
             "s_root1",
             "s_tip2",
             "s_root2",
+            "tooth_ok",
             "RMSE",
             "wRMSE",
             "conf",
@@ -213,6 +218,7 @@ def _format_table_md(
                 f"{r.tooth_thickness_root1:.3f}" if r.tooth_thickness_root1 is not None else "—",
                 f"{r.tooth_thickness_tip2:.3f}" if r.tooth_thickness_tip2 is not None else "—",
                 f"{r.tooth_thickness_root2:.3f}" if r.tooth_thickness_root2 is not None else "—",
+                "no" if r.tooth_violation else "yes",
                 f"{r.total_error:.3e}",
                 f"{r.weighted_error:.3e}",
                 f"{r.confidence:.4f}",
@@ -265,6 +271,7 @@ def _print_table(
     table.add_column("s_root1", justify="right", no_wrap=True)
     table.add_column("s_tip2", justify="right", no_wrap=True)
     table.add_column("s_root2", justify="right", no_wrap=True)
+    table.add_column("tooth_ok", justify="center", no_wrap=True)
     table.add_column("RMSE", justify="right", no_wrap=True)
     table.add_column("wRMSE", justify="right", no_wrap=True)
     table.add_column("conf", justify="right", no_wrap=True)
@@ -308,12 +315,14 @@ def _print_table(
         if is_pair:
             row.extend([da2_str, df2_str, f"{r.aw_calc:.3f}" if r.aw_calc is not None else "—"])
 
+        tooth_ok = "[green]yes[/green]" if not r.tooth_violation else "[red]no[/red]"
         row.extend(
             [
                 f"{r.tooth_thickness_tip1:.3f}" if r.tooth_thickness_tip1 is not None else "—",
                 f"{r.tooth_thickness_root1:.3f}" if r.tooth_thickness_root1 is not None else "—",
                 f"{r.tooth_thickness_tip2:.3f}" if r.tooth_thickness_tip2 is not None else "—",
                 f"{r.tooth_thickness_root2:.3f}" if r.tooth_thickness_root2 is not None else "—",
+                tooth_ok,
                 err_str,
                 f"{r.weighted_error:.3e}",
                 f"{r.confidence:.4f}",

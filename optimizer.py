@@ -29,6 +29,12 @@ from config import (
     WEIGHT_DA,
     WEIGHT_DF,
     WEIGHT_AW,
+    WEIGHT_STIP,
+    WEIGHT_SROOT,
+    TIP_THICKNESS_TOLERANCE,
+    ROOT_THICKNESS_TOLERANCE,
+    MIN_TIP_THICKNESS,
+    MIN_ROOT_THICKNESS,
     C_STAR_VALUES,
     ROOT_FILLET_COEFFS,
 )
@@ -62,6 +68,8 @@ class SolveResult:
     tooth_thickness_root1: Optional[float] = None
     tooth_thickness_tip2: Optional[float] = None
     tooth_thickness_root2: Optional[float] = None
+
+    tooth_violation: bool = False
 
     # Standard labels / meta
     is_gost: bool = False
@@ -396,6 +404,22 @@ def _compute_residuals(
             if s_root2 <= 0:
                 residuals.append(0.5 * abs(s_root2))
 
+    # Measured tooth thickness constraints (if provided by user)
+    _append_tooth_measurement_residuals(
+        residuals=residuals,
+        gear_input=gear_input,
+        is_pair=is_pair,
+        m=m,
+        z1=gear_input.z1,
+        z2=gear_input.z2,
+        x1=x1,
+        x2=x2,
+        ha_star=ha_star,
+        c_star=c_star,
+        root_fillet_coeff=root_fillet_coeff,
+        use_weights=use_weights,
+    )
+
     if not residuals:
         return [0.0]
     return residuals
@@ -411,6 +435,10 @@ def _weighted_diff(field: str, diff: float, gear_input: GearInput, use_weights: 
         base_w = WEIGHT_DF
     elif field == "aw":
         base_w = WEIGHT_AW
+    elif field.startswith("s_tip"):
+        base_w = WEIGHT_STIP
+    elif field.startswith("s_root"):
+        base_w = WEIGHT_SROOT
     else:
         base_w = 1.0
 
@@ -489,6 +517,7 @@ def _build_result(
         tooth_thickness_root1=root1,
         tooth_thickness_tip2=tip2,
         tooth_thickness_root2=root2,
+        tooth_violation=_has_tooth_violation(result_tip1=tip1, result_root1=root1, result_tip2=tip2, result_root2=root2, gear_input=gear_input),
         stage=stage,
     )
     result.confidence = _compute_confidence(result)
@@ -507,6 +536,8 @@ def _result_better(a: SolveResult, b: SolveResult) -> bool:
     if b.total_error < a.total_error:
         return False
 
+    if a.tooth_violation != b.tooth_violation:
+        return not a.tooth_violation
     return a.confidence > b.confidence
 
 
@@ -534,6 +565,104 @@ def _tooth_thickness(
     s_root = s_pitch + 2.0 * m * root_depth * tan_a - fillet_reduction
 
     return float(s_tip), float(s_root)
+
+
+def _root_measurement_correction(m: float, c_star: float, root_fillet_coeff: float) -> float:
+    """
+    Поправка к измеряемой толщине у основания.
+    Из-за скругления и зазора фактический замер обычно получается меньше
+    идеализированной расчётной толщины у основания.
+    """
+    return float(m * (0.35 * c_star + 0.65 * root_fillet_coeff))
+
+
+def _append_tooth_measurement_residuals(
+    residuals: list[float],
+    gear_input: GearInput,
+    is_pair: bool,
+    m: float,
+    z1: int,
+    z2: Optional[int],
+    x1: float,
+    x2: Optional[float],
+    ha_star: float,
+    c_star: float,
+    root_fillet_coeff: float,
+    use_weights: bool,
+) -> None:
+    tip1, root1 = _tooth_thickness(m, z1, x1, ha_star, c_star, root_fillet_coeff)
+    root_corr = _root_measurement_correction(m, c_star, root_fillet_coeff)
+
+    # Hard technology floors
+    if tip1 < MIN_TIP_THICKNESS:
+        residuals.append(5.0 * (MIN_TIP_THICKNESS - tip1))
+    if root1 < MIN_ROOT_THICKNESS:
+        residuals.append(4.0 * (MIN_ROOT_THICKNESS - root1))
+
+    # Optional measured constraints
+    if gear_input.s_tip1 > 0:
+        dt = tip1 - gear_input.s_tip1
+        residuals.append(_weighted_diff("s_tip1", dt / max(TIP_THICKNESS_TOLERANCE, 1e-6), gear_input, use_weights))
+        if tip1 < gear_input.s_tip1 - TIP_THICKNESS_TOLERANCE:
+            residuals.append(8.0 * (gear_input.s_tip1 - TIP_THICKNESS_TOLERANCE - tip1))
+
+    if gear_input.s_root1 > 0:
+        root_meas_equiv = root1 - root_corr
+        dr = root_meas_equiv - gear_input.s_root1
+        residuals.append(_weighted_diff("s_root1", dr / max(ROOT_THICKNESS_TOLERANCE, 1e-6), gear_input, use_weights))
+        if root_meas_equiv < gear_input.s_root1 - ROOT_THICKNESS_TOLERANCE:
+            residuals.append(6.0 * (gear_input.s_root1 - ROOT_THICKNESS_TOLERANCE - root_meas_equiv))
+
+    if is_pair and z2 is not None and x2 is not None:
+        tip2, root2 = _tooth_thickness(m, z2, x2, ha_star, c_star, root_fillet_coeff)
+        if tip2 < MIN_TIP_THICKNESS:
+            residuals.append(5.0 * (MIN_TIP_THICKNESS - tip2))
+        if root2 < MIN_ROOT_THICKNESS:
+            residuals.append(4.0 * (MIN_ROOT_THICKNESS - root2))
+
+        if gear_input.s_tip2 is not None and gear_input.s_tip2 > 0:
+            dt2 = tip2 - gear_input.s_tip2
+            residuals.append(_weighted_diff("s_tip2", dt2 / max(TIP_THICKNESS_TOLERANCE, 1e-6), gear_input, use_weights))
+            if tip2 < gear_input.s_tip2 - TIP_THICKNESS_TOLERANCE:
+                residuals.append(8.0 * (gear_input.s_tip2 - TIP_THICKNESS_TOLERANCE - tip2))
+
+        if gear_input.s_root2 is not None and gear_input.s_root2 > 0:
+            root2_meas_equiv = root2 - root_corr
+            dr2 = root2_meas_equiv - gear_input.s_root2
+            residuals.append(_weighted_diff("s_root2", dr2 / max(ROOT_THICKNESS_TOLERANCE, 1e-6), gear_input, use_weights))
+            if root2_meas_equiv < gear_input.s_root2 - ROOT_THICKNESS_TOLERANCE:
+                residuals.append(6.0 * (gear_input.s_root2 - ROOT_THICKNESS_TOLERANCE - root2_meas_equiv))
+
+
+def _has_tooth_violation(
+    result_tip1: Optional[float],
+    result_root1: Optional[float],
+    result_tip2: Optional[float],
+    result_root2: Optional[float],
+    gear_input: GearInput,
+) -> bool:
+    if result_tip1 is not None and result_tip1 < MIN_TIP_THICKNESS:
+        return True
+    if result_root1 is not None and result_root1 < MIN_ROOT_THICKNESS:
+        return True
+    if result_tip2 is not None and result_tip2 < MIN_TIP_THICKNESS:
+        return True
+    if result_root2 is not None and result_root2 < MIN_ROOT_THICKNESS:
+        return True
+
+    if gear_input.s_tip1 > 0 and result_tip1 is not None and result_tip1 < gear_input.s_tip1 - TIP_THICKNESS_TOLERANCE:
+        return True
+    if gear_input.s_tip2 is not None and gear_input.s_tip2 > 0 and result_tip2 is not None and result_tip2 < gear_input.s_tip2 - TIP_THICKNESS_TOLERANCE:
+        return True
+
+    # For measured root thickness we use conservative check without correction
+    # because correction is model-based approximation.
+    if gear_input.s_root1 > 0 and result_root1 is not None and result_root1 < gear_input.s_root1 - ROOT_THICKNESS_TOLERANCE:
+        return True
+    if gear_input.s_root2 is not None and gear_input.s_root2 > 0 and result_root2 is not None and result_root2 < gear_input.s_root2 - ROOT_THICKNESS_TOLERANCE:
+        return True
+
+    return False
 
 
 def _calc_aw(m: float, z1: int, z2: int, x1: float, x2: float) -> float:
@@ -564,7 +693,9 @@ def _compute_confidence(result: SolveResult) -> float:
         ]
         if t is not None
     )
-    if min_tooth <= 0:
+    if result.tooth_violation:
+        tooth_factor = 0.35
+    elif min_tooth <= 0:
         tooth_factor = 0.6
 
     conf = base * stage_factor * bound_factor * tooth_factor

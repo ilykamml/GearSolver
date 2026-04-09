@@ -16,9 +16,17 @@ class GearInput:
     da1: float          # Диаметр вершин шестерни 1
     df1: float          # Диаметр впадин шестерни 1
     z1: int             # Число зубьев шестерни 1
+
+    # Измеренные толщины зуба (0 = неизвестно)
+    s_tip1: float = 0.0
+    s_root1: float = 0.0
+
     da2: Optional[float] = None  # Диаметр вершин шестерни 2
     df2: Optional[float] = None  # Диаметр впадин шестерни 2
     z2: Optional[int] = None     # Число зубьев шестерни 2
+    s_tip2: Optional[float] = None
+    s_root2: Optional[float] = None
+
     aw: float = 0.0              # Межосевое расстояние (0 = не задано)
 
     # Статистика по множественным измерениям (для отчёта)
@@ -203,23 +211,52 @@ def interactive_input() -> GearInput:
     df1, stats['df1'] = _input_float_multi("  df1 (диаметр впадин, мм): ", "df1")
     z1 = _input_int_multi("  z1 (число зубьев): ")
 
+    st1, stats['s_tip1'] = _input_float_multi(
+        "  s_tip1 (толщина вершины зуба, мм, 0 если неизвестно): ",
+        "s_tip1",
+    )
+    sr1, stats['s_root1'] = _input_float_multi(
+        "  s_root1 (толщина у основания зуба, мм, 0 если неизвестно): ",
+        "s_root1",
+    )
+
     if n_gears == 1:
         aw, stats['aw'] = _input_float_multi("\naw (межосевое расстояние, мм, опционально): ", "aw")
-        return GearInput(da1=da1, df1=df1, z1=z1, aw=aw, measurement_stats=stats)
+        return GearInput(
+            da1=da1,
+            df1=df1,
+            z1=z1,
+            s_tip1=st1,
+            s_root1=sr1,
+            aw=aw,
+            measurement_stats=stats,
+        )
 
     print("\n=== Шестерня 2 ===")
     da2, stats['da2'] = _input_float_multi("  da2 (диаметр вершин, мм): ", "da2")
     df2, stats['df2'] = _input_float_multi("  df2 (диаметр впадин, мм): ", "df2")
     z2 = _input_int_multi("  z2 (число зубьев): ")
+    st2, stats['s_tip2'] = _input_float_multi(
+        "  s_tip2 (толщина вершины зуба, мм, 0 если неизвестно): ",
+        "s_tip2",
+    )
+    sr2, stats['s_root2'] = _input_float_multi(
+        "  s_root2 (толщина у основания зуба, мм, 0 если неизвестно): ",
+        "s_root2",
+    )
     aw, stats['aw'] = _input_float_multi("\naw (межосевое расстояние, мм, опционально): ", "aw")
 
     return GearInput(
         da1=da1,
         df1=df1,
         z1=z1,
+        s_tip1=st1,
+        s_root1=sr1,
         da2=da2,
         df2=df2,
         z2=z2,
+        s_tip2=st2,
+        s_root2=sr2,
         aw=aw,
         measurement_stats=stats,
     )
